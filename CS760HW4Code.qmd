@@ -1,0 +1,298 @@
+---
+title: "CS760HW4Code"
+author: "Joe Bales"
+format:
+  html:
+    toc: true
+    self-contained: true
+---
+
+```{r}
+#| warning: false
+#| echo: false
+library(tidyverse)
+dir = "C:/Users/Joe Bales/Desktop/Academics/1 Fall 2023/CS760/Homework 4/languageID/"
+putDir = function(lang, numb){
+  return(stringr::str_c(dir,lang,as.character(numb),".txt",sep=""))
+}
+```
+
+## This was mistakenly using the bag of words approach
+Here are two functions that when used together create a vector of all the unique words in the 60 text files
+```{r}
+#this function makes a nice string vector of each word for a given language and number 0 to 19.
+makeTextNice = function(lang, numb){
+  return(read.table(text = gsub(" ", "\n", readLines(putDir(lang,numb))), sep = "\n"))
+}
+
+#This function takes all 60 lists and creates a vector of unique words used
+makeListOfAllWords = function(){
+  empty = list()
+  for ( i in 0:19 ){
+    for(lang in c("e","j","s")){
+      empty = append(empty, makeTextNice(lang, i))
+    }
+  }
+  return(empty %>% unlist(use.names = FALSE) %>% unique())
+}
+```
+
+Here we create the data set to which we will apply Naive Bayes
+```{r}
+p = length(makeListOfAllWords())
+tofill_df = data.frame(matrix(0, ncol = p+1, nrow = 60))
+colnames(tofill_df) = c("Y", makeListOfAllWords())
+tofill_df$Y = c(rep(0,20), rep(1,20), rep(2,20)) #where 0,1,2 rep. e,j,s
+
+#View(tofill_df)
+
+langs = c("e","j","s")
+for (i in 0:19){
+  for (j in 1:3){
+    tofill_df[((j-1)*20)+i+1 , -1] = (colnames(tofill_df)[-1] %in% makeTextNice(langs[j], i)[,1]) %>% as.numeric()
+  }
+}
+
+language_df = tofill_df
+#View(language_df)
+```
+
+Now we can apply our multinomial Y Naive Bayes model. Here we'll use 
+
+
+## Trying again using bag of CHARACTERS
+Initialize our dataframe
+```{r}
+DF = cbind(data.frame(Language = c(rep("e",20),rep("j",20),rep("s",20))),
+           data.frame(matrix(0,nrow = 60, ncol = 27)))
+colnames(DF) = c("Language", " ", letters)
+```
+
+Function to go into one file and grab a vector of character counts with names
+```{r}
+GrabCharCounts = function(lang, numb){
+  #load txt file corresponding to language and number as vector of characters
+  #leaving out \n character
+  file_chars = (read_file(putDir(lang, numb)) %>% str_split(""))[[1]] 
+  file_chars_nonewline = file_chars[file_chars!="\n"]
+  
+  #this counts the number of each
+  table_chars_nonewline = file_chars_nonewline %>% table()
+  
+  #this makes sure that it includes count of zero for ones that didn't show up
+  emptytable = rep(0,27)
+  names(emptytable) = c(" ", letters)
+  emptytable[names(table_chars_nonewline)] = table_chars_nonewline
+  return(emptytable)
+}
+```
+
+Filling our initialized dataframe
+```{r}
+for (j in 1:3){
+  for (i in 1:20){
+    DF[(j-1)*20 + i,-1] = GrabCharCounts(c("e","j","s")[j], i-1)
+  }
+}
+```
+
+Here is the data frame with binary features rather than counting
+```{r}
+DF_bi = DF
+DF_bi[,-1] = apply(DF[,-1]>0, MARGIN = 2, FUN = as.numeric)
+```
+
+
+## Naive Bayes stuff
+
+### Part 1 - estimate prior probabilities
+```{r}
+train_DF = DF[c(1:10,21:30,41:50),]
+```
+
+Let $\phi_l = p(y=l)$ where $\sum_{l\in\{e,j,s\}} \phi_l = 1$
+
+Then as an example, here is our estimated prior probability for an english document.
+$$\hat{p}(y=e)=\frac{
+(\sum_{i=1}^{n_{tr}}\mathbb{I}(y_i=e)) + \frac{1}{2}
+}{
+(\sum_{i=1}^{n_{tr}}1) + \sum_{y\in\{e,j,s\}}\frac{1}{2}
+} 
+= \frac{10 + \frac{1}{2}}{30 + \frac{3}{2}} = \frac{1}{3}$$
+
+```{r}
+(train_DF[train_DF$Language=="e",1] %>% length())/(train_DF[,1] %>% length())
+```
+
+
+
+### Part 2 - estimate class-conditional probabilities of characters
+
+Let $\theta_{i,l} = p(c_i | y=l)$ be the class-conditional probability of a given character being drawn. Also let $b_{i,l}$ be the number of $i$-th characters present in all documents of language $l$. 
+
+Then given that the document is in English, our estimated probability of any given character using smoothing parameter 1/2, where 27 is the number of different characters, is:
+$$\hat{\theta}_{i,l} = \hat{p}(c_i|y=e) = \frac{b_{i,e}+\frac{1}{2}}{(\sum_{j}b_{j,e})+\frac{27}{2}}$$
+This function will return us the estimated character probability given a language:
+```{r}
+giveClassCondProb = function(lang, k, df = train_DF){
+  #Get the subset of observations under language condition
+  subDF = df[df$Language==lang,]
+  #Then I just stored the numerator and denominator from the previous equation
+  #for our class-conditional probability estimate
+  num = (subDF[,1+k]%>%sum()) + (1/2)
+  denom = (subDF[,-1]%>%apply(MARGIN=2,sum)%>%sum()) + (27/2)
+  return(num/denom)
+}
+```
+
+Here we use it to report every character's English-conditional probability:
+```{r}
+giveClassCondProbs = function(lang, df = train_DF){
+  #initialize a table to fill
+  econdprobs = rep(0,27)
+  names(econdprobs) = c(" ",letters)
+  #filling and returning it
+  for (k in 1:27){
+    econdprobs[k] = giveClassCondProb(lang, k, df)
+  }
+  econdprobs %>% return()
+}
+```
+
+```{r}
+giveClassCondProbs("e")
+```
+
+### Part 3
+Here we just repeat the same thing but for Japanese:
+```{r}
+giveClassCondProbs("j")
+```
+and Spanish:
+```{r}
+giveClassCondProbs("s")
+```
+
+
+### Part 4
+Here is e10.txt as a "bag-of-characters" count vector:
+```{r}
+(DF[11,-1])
+```
+
+### Part 5
+We already defined a function that will grab us estimated class-conditional probabilities of characters. We can use those to now estimate the class-conditional probability of an observation.
+
+(To avoid underflow, as recommended by the problem's prompt, we'll do arithmetic in log probability land and then report the final answer in probability land, i.e. perform computations using $e^{\log(\hat{p}(x|y=l))} = e^{\sum_{i=1}^{d}x_i\log(\theta_{i,l})}$).
+
+Here are some functions that return to us an estimate for conditional probability or conditional log-probability
+```{r}
+findProbOfNewChars = function(test = DF[11,-1], train = train_DF, lang){
+  test2 = test %>% as.numeric()
+  logprobs = giveClassCondProbs(lang, df = train) %>% as.numeric() %>% log()
+  return(exp((test2*logprobs)%>%sum()))
+}
+findLogProbOfNewChars = function(test = DF[11,-1], train = train_DF, lang){
+  test2 = test %>% as.numeric()
+  logprobs = giveClassCondProbs(lang, df = train) %>% as.numeric() %>% log()
+  return(((test2*logprobs)%>%sum()))
+}
+```
+
+Here are the values to report:
+```{r}
+data.frame( English = 
+              c(findLogProbOfNewChars(lang = "e"),findProbOfNewChars(lang = "e")),
+            Japanese = 
+              c(findLogProbOfNewChars(lang = "j"),findProbOfNewChars(lang = "j")),
+            Spanish = 
+              c(findLogProbOfNewChars(lang = "s"),findProbOfNewChars(lang = "s")), 
+            row.names = c("logProb of X given language", "Prob of X given language") )
+```
+
+I have reported the log probabilities because exponentiating such largely negative numbers in R results in exactly zero results.
+
+### Part 6
+Due to underflow, I won't be able to show these values precisely. This is because in finding the denominator of Bayes' rule, $\hat{p}(x) = \sum_{l}\hat{p}(x|y=l)\hat{p}(y=l)$, there is no way for me to avoid getting something that evaluates to zero. I can still compare the numerators to get a prediction, but I won't be able to find the exact posterior probability.
+
+Notice that
+$$p(y|x) = \frac{p(x|y)p(y)}{\sum_tp(x|t)p(t)} $$
+$$\ldots = \exp(-\log(\frac{\sum_tp(x|t)p(t)}{p(x|y)p(y)})) $$
+$$\ldots = \exp(-\log(1+\frac{\sum_{t\ne y}p(x|t)p(t)}{p(x|y)p(y)})) $$
+
+And note that for any $t$, because our class probability estimates are the same regardless of class,
+$$ \frac{p(x|t)p(t)}{p(x|y)p(y)} = \exp\{\log p(x|t)+\log p(t)-\log p(x|y)-\log p(y)\} = \exp\{ \log p(x|t) - \log p(x|y) \}$$
+So we arrive at this expression for the class probability conditioned on our observed features:
+$$ p(y|x) = \exp(-\log(1+\sum_{t\ne y}\exp\{ \log p(x|t) - \log p(x|y) \}))$$
+
+
+
+From part 5 we can see that English has the highest log class-conditional likelihood.
+
+```{r}
+findDiffInLog = function(test = DF[11,-1], train = train_DF, lang1, lang2){
+  return( findLogProbOfNewChars(test, train, lang1) - findLogProbOfNewChars(test, train, lang2) )
+}
+
+findA = function(test = DF[11,-1], train = train_DF, lang){
+  vec = c("e","j","s")[!(c("e","j","s")%in%c(lang))]
+  tosum = 1
+  for (i in 1:2){
+    tosum = tosum + exp(findDiffInLog(test, train, vec[i], lang))
+  }
+  return(tosum)
+}
+
+findPosterior = function(test = DF[11,-1], train = train_DF, lang){
+  return( exp( -log( findA(test, train, lang) ) ) )
+}
+```
+
+Here are the reported posterior probability estimates:
+```{r}
+data.frame( English = findPosterior(lang = "e"),
+            Japanese = findPosterior(lang = "j"),
+            Spanish = findPosterior(lang = "s"),
+            Prediction = "English")
+```
+The estimates for posterior probabilities of English and Japanese classes were close enough to 1 and 0 respectively that R simply outputs those values.
+
+Though to determine the actual classification, it is enough to compare log class-conditional likelihoods because:
+$$ \arg\max_{y} \hat{p}(y|x) =  \arg\max_{y} \frac{\hat{p}(x|y)\hat{p}(y)}{\hat{p}(x)} = \arg\max_{y}\{\log\hat{p}(x|y) + \log\hat{p}(y) \} = \arg\max_{y}\log\hat{p}(x|y)$$ and also since $\hat{p}(y = l) = \frac{1}{3}$ for any $l\in\{e,j,s\}$.
+
+### Part 7
+Here we'll define functions to give us our predictions for the test subset of observations.
+```{r}
+chooseLanguage = function(test, train = train_DF){
+  langs = c("e","j","s")
+  vec = c(findLogProbOfNewChars(test, lang = "e"), 
+          findLogProbOfNewChars(test, lang = "j"), 
+          findLogProbOfNewChars(test, lang = "s"))
+  return(langs[which.max(vec)])
+}
+
+gatherAllPredictions = function(){
+  vec = rep(" ",30)
+  for (t in 1:3){
+    for (i in 1:10){
+      vec[i + ((t-1)*10)] = chooseLanguage(test = DF[((20*(t-1))+i+10),-1])
+    }
+  }
+  return(vec)
+}
+
+(caret::confusionMatrix(
+  data = factor(gatherAllPredictions()),
+  reference = factor(c(rep("e",10),rep("j",10),rep("s",10)))
+  ))$table
+```
+
+### Part 8
+
+
+
+
+
+
+
+
